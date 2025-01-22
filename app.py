@@ -2,22 +2,25 @@ from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from datetime import datetime
+from werkzeug.security import generate_password_hash, check_password_hash
 import os
+from sqlalchemy.exc import SQLAlchemyError
 
+# Initialize Flask app
 app = Flask(__name__)
 
 # Enable CORS for all routes
 CORS(app, resources={r"/*": {"origins": "*"}})  # Allow all origins for now
 
 # Database configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'postgresql://postgres:1234@localhost:5432/gaz-by-gaz')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'postgresql://postgres:1234@localhost:5432/GasByGas')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
 # Define Models
 class Users(db.Model):
-    __tablename__ = 'users'  # Match the table name in the database
-    userid = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    __tablename__ = 'users'
+    userid = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(255), unique=True, nullable=False)
     password = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(50), nullable=False, default='Customer')
@@ -25,8 +28,8 @@ class Users(db.Model):
     updatedat = db.Column(db.TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class Customer(db.Model):
-    __tablename__ = 'customer'  # Match the table name in the database
-    customerid = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    __tablename__ = 'customer'
+    customerid = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(255), nullable=False)
     email = db.Column(db.String(255), unique=True, nullable=False)
     contactnumber = db.Column(db.String(20), nullable=False)
@@ -37,8 +40,8 @@ class Customer(db.Model):
     updatedat = db.Column(db.TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class Business(db.Model):
-    __tablename__ = 'business'  # Match the table name in the database
-    businessid = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    __tablename__ = 'business'
+    businessid = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(255), nullable=False)
     email = db.Column(db.String(255), unique=True, nullable=False)
     contactnumber = db.Column(db.String(20), nullable=False)
@@ -50,8 +53,8 @@ class Business(db.Model):
     updatedat = db.Column(db.TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class Outlet(db.Model):
-    __tablename__ = 'outlet'  # Match the table name in the database
-    outid = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    __tablename__ = 'outlet'
+    outid = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(255), nullable=False)
     email = db.Column(db.String(255), unique=True, nullable=False)
     contactnumber = db.Column(db.String(20), nullable=False)
@@ -61,45 +64,49 @@ class Outlet(db.Model):
     updatedat = db.Column(db.TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class CustomerOrders(db.Model):
-    __tablename__ = 'customerorders'  # Match the table name in the database
-    orderid = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    __tablename__ = 'customerorders'
+    orderid = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(255), nullable=False)
-    twoandhalfkg = db.Column(db.Text)
+    twoandhalfkg = db.Column(db.Integer)
     fivekg = db.Column(db.Integer)
-    twelvekg = db.Column(db.Integer)
-    orderdetails = db.Column(db.Integer)
+    twelevekg = db.Column(db.Integer)
+    twoandhalfkgtank = db.Column(db.Integer)
+    fivekgtank = db.Column(db.Integer)
+    twelevekgtank = db.Column(db.Integer)
     createddate = db.Column(db.TIMESTAMP, default=datetime.utcnow)
     ordereddate = db.Column(db.TIMESTAMP, nullable=False)
     status = db.Column(db.String(50))
     completeddate = db.Column(db.TIMESTAMP)
     total = db.Column(db.Numeric(10, 2), nullable=False)
-    tanks = db.Column(db.Integer)
     customerid = db.Column(db.Integer, db.ForeignKey('customer.customerid'), nullable=False)
 
 class BusinessOrders(db.Model):
-    __tablename__ = 'businessorders'  # Match the table name in the database
-    businessorderid = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    __tablename__ = 'businessorders'
+    businessorderid = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(255), nullable=False)
-    twoandhalfkg = db.Column(db.Text)
+    twoandhalfkg = db.Column(db.Integer)
     fivekg = db.Column(db.Integer)
-    twelvekg = db.Column(db.Integer)
+    twelevekg = db.Column(db.Integer)
     thirtysevenkg = db.Column(db.Integer)
+    twoandhalfkgtank = db.Column(db.Integer)
+    fivekgtank = db.Column(db.Integer)
+    twelevekgtank = db.Column(db.Integer)
+    thirtysevenkgtank = db.Column(db.Integer)
     createddate = db.Column(db.TIMESTAMP, default=datetime.utcnow)
     ordereddate = db.Column(db.TIMESTAMP, nullable=False)
     status = db.Column(db.String(50))
     completeddate = db.Column(db.TIMESTAMP)
     pickupdate = db.Column(db.TIMESTAMP)
     total = db.Column(db.Numeric(10, 2), nullable=False)
-    tanks = db.Column(db.Integer)
     businessid = db.Column(db.Integer, db.ForeignKey('business.businessid'), nullable=False)
 
 class OutletOrders(db.Model):
-    __tablename__ = 'outletorders'  # Match the table name in the database
-    orderid = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    __tablename__ = 'outletorders'
+    orderid = db.Column(db.Integer, primary_key=True)
     outname = db.Column(db.String(255), nullable=False)
-    twoandhalfkg = db.Column(db.Text)
+    twoandhalfkg = db.Column(db.Integer)
     fivekg = db.Column(db.Integer)
-    twelvekg = db.Column(db.Integer)
+    twelevekg = db.Column(db.Integer)
     thirtysevenkg = db.Column(db.Integer)
     total = db.Column(db.Numeric(10, 2), nullable=False)
     status = db.Column(db.String(50))
@@ -129,7 +136,7 @@ def register():
         # Create a new user
         new_user = Users(
             username=data['username'],
-            password=data['password'],  # In production, hash the password before saving
+            password=generate_password_hash(data['password']),  # Hash the password
             role='Customer'
         )
         db.session.add(new_user)
@@ -151,9 +158,13 @@ def register():
 
         return jsonify({'message': 'Registration successful', 'userid': new_user.userid}), 201
 
-    except Exception as e:
+    except SQLAlchemyError as e:
         db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+        app.logger.error(f"Database error: {str(e)}")
+        return jsonify({'error': 'Database error'}), 500
+    except Exception as e:
+        app.logger.error(f"Unexpected error: {str(e)}")
+        return jsonify({'error': 'An unexpected error occurred'}), 500
 
 # Login Endpoint
 @app.route('/login', methods=['POST'])
@@ -169,12 +180,46 @@ def login():
     if not user:
         return jsonify({'error': 'Invalid username or password'}), 401
 
-    # Verify password (use bcrypt in production)
-    if user.password != data['password']:
+    # Verify password
+    if not check_password_hash(user.password, data['password']):
         return jsonify({'error': 'Invalid username or password'}), 401
 
     # Return the user's role
     return jsonify({'message': 'Login successful', 'role': user.role}), 200
+
+# Customer Orders Endpoint
+@app.route('/customer-orders', methods=['GET'])
+def get_customer_orders():
+    try:
+        # Fetch all customer orders from the database
+        orders = CustomerOrders.query.all()
+        orders_data = []
+
+        for order in orders:
+            orders_data.append({
+                'id': order.orderid,
+                'customer': order.name,
+                'order': [
+                    f"2.5 Kg : {order.twoandhalfkg}",
+                    f"5 Kg : {order.fivekg}",
+                    f"12.5 Kg : {order.twelevekg}"
+                ],
+                'Date': order.createddate.strftime('%d %b, %Y'),
+                'Status': order.status,
+                'Total': f"${order.total}",
+                'Tank': [
+                    f"2.5 Kg : {order.twoandhalfkgtank}",
+                    f"5 Kg : {order.fivekgtank}",
+                    f"12.5 Kg : {order.twelevekgtank}"
+                ],
+                'contact': '07723112123'  # Add contact if available in the database
+            })
+
+        return jsonify(orders_data), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 # Run the Flask app
 if __name__ == '__main__':
