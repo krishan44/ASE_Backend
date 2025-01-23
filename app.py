@@ -33,6 +33,11 @@ class Users(db.Model):
     createdat = db.Column(db.TIMESTAMP, default=datetime.utcnow)
     updatedat = db.Column(db.TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+ # Relationships
+    customer = db.relationship('Customer', backref='user', uselist=False)
+    business = db.relationship('Business', backref='user', uselist=False)
+    outlet = db.relationship('Outlet', backref='user', uselist=False)
+
 class Customer(db.Model):
     __tablename__ = 'customer'
     customerid = db.Column(db.Integer, primary_key=True)
@@ -44,6 +49,9 @@ class Customer(db.Model):
     address = db.Column(db.Text)
     createdat = db.Column(db.TIMESTAMP, default=datetime.utcnow)
     updatedat = db.Column(db.TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+    orders = db.relationship('CustomerOrders', backref='customer')
 
 class Business(db.Model):
     __tablename__ = 'business'
@@ -58,6 +66,9 @@ class Business(db.Model):
     createdat = db.Column(db.TIMESTAMP, default=datetime.utcnow)
     updatedat = db.Column(db.TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # Relationships
+    orders = db.relationship('BusinessOrders', backref='business')
+
 class Outlet(db.Model):
     __tablename__ = 'outlet'
     outid = db.Column(db.Integer, primary_key=True)
@@ -68,6 +79,9 @@ class Outlet(db.Model):
     createdat = db.Column(db.TIMESTAMP, default=datetime.utcnow)
     updatedat = db.Column(db.TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
     userid = db.Column(db.Integer, db.ForeignKey('users.userid'), nullable=False)
+
+    # Relationships
+    orders = db.relationship('OutletOrders', backref='outlet')
 
 class CustomerOrders(db.Model):
     __tablename__ = 'customerorders'
@@ -85,6 +99,9 @@ class CustomerOrders(db.Model):
     completeddate = db.Column(db.TIMESTAMP)
     total = db.Column(db.Numeric(10, 2), nullable=False)
     customerid = db.Column(db.Integer, db.ForeignKey('customer.customerid'), nullable=False)
+
+ # Relationships
+    customer_entity = db.relationship('Customer', backref='customer_orders')
 
 class BusinessOrders(db.Model):
     __tablename__ = 'businessorders'
@@ -105,6 +122,9 @@ class BusinessOrders(db.Model):
     thirtysevenkgtank = db.Column(db.Integer)
     businessid = db.Column(db.Integer, db.ForeignKey('business.businessid'), nullable=False)
 
+    # Relationships
+    business_entity = db.relationship('Business', backref='business_orders')
+
 class OutletOrders(db.Model):
     __tablename__ = 'outletorders'
     orderid = db.Column(db.Integer, primary_key=True)
@@ -119,6 +139,10 @@ class OutletOrders(db.Model):
     orderedon = db.Column(db.TIMESTAMP)
     completedon = db.Column(db.TIMESTAMP)
     outid = db.Column(db.Integer, db.ForeignKey('outlet.outid'), nullable=False)
+
+
+    # Relationships
+    outlet_entity = db.relationship('Outlet', backref='outlet_orders')
 
 @app.route('/register', methods=['POST'])
 def register():
@@ -309,14 +333,44 @@ def get_customer_orders(branch):
 @app.route('/business-orders/<branch>', methods=['GET'])
 def get_business_orders(branch):
     try:
-        # Fetch business orders for the specific branch
-        orders = BusinessOrders.query.filter_by(outlet=branch).all()
-        orders_data = []
+        # Debugging: Print the branch being queried
+        logger.info(f"Fetching business orders for branch: {branch}")
 
+        # Fetch business orders for the specific branch
+        orders = (
+            BusinessOrders.query
+            .join(Business, BusinessOrders.businessid == Business.businessid)
+            .filter(Business.outlet == branch)
+            .options(joinedload(BusinessOrders.business))  # Eager load business data
+            .all()
+        )
+
+        # Debugging: Print the number of orders fetched
+        logger.info(f"Number of business orders fetched for branch '{branch}': {len(orders)}")
+
+        if not orders:
+            logger.info(f"No business orders found for branch: {branch}")
+            return jsonify([]), 200
+
+        orders_data = []
         for order in orders:
+            # Debugging: Print the details of each order
+            logger.info(f"\n--- Business Order Details ---")
+            logger.info(f"Order ID: {order.businessorderid}")
+            logger.info(f"Business Name: {order.business.name}")
+            logger.info(f"2.5 Kg: {order.twoandhalfkg}")
+            logger.info(f"5 Kg: {order.fivekg}")
+            logger.info(f"12.5 Kg: {order.twelevekg}")
+            logger.info(f"37 Kg: {order.thirtysevenkg}")
+            logger.info(f"Status: {order.status}")
+            logger.info(f"Total: Rs.{order.total}")
+            logger.info(f"Created Date: {order.createddate}")
+            logger.info(f"Tank Details - 2.5 Kg: {order.twoandhalfkgtank}, 5 Kg: {order.fivekgtank}, 12.5 Kg: {order.twelevekgtank}, 37 Kg: {order.thirtysevenkgtank}")
+            logger.info("-" * 40)  # Separator for readability
+
             orders_data.append({
                 'id': order.businessorderid,
-                'customer': order.name,
+                'customer': order.business.name,  # Use business name as customer
                 'order': [
                     f"2.5 Kg : {order.twoandhalfkg}",
                     f"5 Kg : {order.fivekg}",
@@ -337,34 +391,74 @@ def get_business_orders(branch):
         return jsonify(orders_data), 200
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Error fetching business orders for branch {branch}: {str(e)}")
+        return jsonify({'error': 'An internal server error occurred'}), 500
 
-@app.route('/outlet-orders/<outname>', methods=['GET'])
-def get_outlet_orders(outname):
+
+@app.route('/outlet-orders/<branch>', methods=['GET'])
+def get_outlet_orders(branch):
     try:
-        # Fetch orders for the specific outlet
-        orders = OutletOrders.query.filter_by(outname=outname).all()
-        orders_data = []
+        # Debugging: Print the branch being queried
+        logger.info(f"Fetching outlet orders for branch: {branch}")
 
+        # Input validation
+        if not branch or branch.lower() == 'null':
+            logger.error(f"Invalid branch: {branch}")
+            return jsonify({'error': 'Invalid branch'}), 400
+
+        # Fetch orders for the specific branch
+        orders = (
+            OutletOrders.query
+            .join(Outlet, OutletOrders.outid == Outlet.outid)
+            .filter(Outlet.name == branch)  # Use branch instead of outname
+            .options(joinedload(OutletOrders.outlet))  # Eager load outlet data
+            .all()
+        )
+
+        # Debugging: Print the number of orders fetched
+        logger.info(f"Number of outlet orders fetched for branch '{branch}': {len(orders)}")
+
+        if not orders:
+            logger.info(f"No outlet orders found for branch: {branch}")
+            return jsonify([]), 200
+
+        orders_data = []
         for order in orders:
+            # Debugging: Print the details of each order
+            logger.info(f"\n--- Outlet Order Details ---")
+            logger.info(f"Order ID: {order.orderid}")
+            logger.info(f"Outlet Name: {order.outlet.name}")
+            logger.info(f"2.5 Kg: {order.twoandhalfkg}")
+            logger.info(f"5 Kg: {order.fivekg}")
+            logger.info(f"12.5 Kg: {order.twelevekg}")
+            logger.info(f"37 Kg: {order.thirtysevenkg}")
+            logger.info(f"Status: {order.status}")
+            logger.info(f"Total: ${order.total}")
+            logger.info(f"Created Date: {order.createdon}")
+            logger.info("-" * 40)  # Separator for readability
+
             orders_data.append({
                 'id': order.orderid,
-                'customer': order.outname,  # Assuming outname is the customer name
+                'customer': order.outlet.name,  # Use outlet name as customer
                 'order': [
                     f"2.5 Kg : {order.twoandhalfkg}",
                     f"5 Kg : {order.fivekg}",
                     f"12.5 Kg : {order.twelevekg}",
                     f"37 Kg : {order.thirtysevenkg}"
                 ],
-                'Date': order.createdon.strftime('%d %b, %Y'),  # Use createdon or orderedon
+                'Date': order.createdon.strftime('%d %b, %Y'),
                 'Status': order.status,
-                'Total': f"${order.total}"
+                'Total': f"Rs.{order.total}"
             })
 
         return jsonify(orders_data), 200
 
+    except SQLAlchemyError as e:
+        logger.error(f"Database error fetching outlet orders for branch {branch}: {str(e)}")
+        return jsonify({'error': 'A database error occurred'}), 500
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Error fetching outlet orders for branch {branch}: {str(e)}")
+        return jsonify({'error': 'An internal server error occurred'}), 500
 
 # Run the Flask app
 if __name__ == '__main__':
