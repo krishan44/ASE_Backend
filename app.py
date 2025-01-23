@@ -5,10 +5,16 @@ from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 import os
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import joinedload
+import logging
+from flask import jsonify
+from sqlalchemy.orm import joinedload
+
 
 # Initialize Flask app
 app = Flask(__name__)
-
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 # Enable CORS for all routes
 CORS(app, resources={r"/*": {"origins": "*"}})  # Allow all origins for now
 
@@ -58,10 +64,10 @@ class Outlet(db.Model):
     name = db.Column(db.String(255), nullable=False)
     email = db.Column(db.String(255), unique=True, nullable=False)
     contactnumber = db.Column(db.String(20), nullable=False)
-    userid = db.Column(db.Integer, db.ForeignKey('users.userid'), nullable=False)
     address = db.Column(db.Text)
     createdat = db.Column(db.TIMESTAMP, default=datetime.utcnow)
     updatedat = db.Column(db.TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+    userid = db.Column(db.Integer, db.ForeignKey('users.userid'), nullable=False)
 
 class CustomerOrders(db.Model):
     __tablename__ = 'customerorders'
@@ -88,16 +94,15 @@ class BusinessOrders(db.Model):
     fivekg = db.Column(db.Integer)
     twelevekg = db.Column(db.Integer)
     thirtysevenkg = db.Column(db.Integer)
-    twoandhalfkgtank = db.Column(db.Integer)
-    fivekgtank = db.Column(db.Integer)
-    twelevekgtank = db.Column(db.Integer)
-    thirtysevenkgtank = db.Column(db.Integer)
     createddate = db.Column(db.TIMESTAMP, default=datetime.utcnow)
     ordereddate = db.Column(db.TIMESTAMP, nullable=False)
     status = db.Column(db.String(50))
     completeddate = db.Column(db.TIMESTAMP)
-    pickupdate = db.Column(db.TIMESTAMP)
     total = db.Column(db.Numeric(10, 2), nullable=False)
+    twoandhalfkgtank = db.Column(db.Integer)
+    fivekgtank = db.Column(db.Integer)
+    twelevekgtank = db.Column(db.Integer)
+    thirtysevenkgtank = db.Column(db.Integer)
     businessid = db.Column(db.Integer, db.ForeignKey('business.businessid'), nullable=False)
 
 class OutletOrders(db.Model):
@@ -115,13 +120,12 @@ class OutletOrders(db.Model):
     completedon = db.Column(db.TIMESTAMP)
     outid = db.Column(db.Integer, db.ForeignKey('outlet.outid'), nullable=False)
 
-# Registration Endpoint
 @app.route('/register', methods=['POST'])
 def register():
     data = request.json
 
     # Validate required fields
-    required_fields = ['username', 'password', 'full_name', 'email', 'mobile_number', 'address', 'outlet']
+    required_fields = ['username', 'password', 'full_name', 'email', 'mobile_number', 'address', 'outlet', 'type']
     for field in required_fields:
         if field not in data:
             return jsonify({'error': f'{field} is required'}), 400
@@ -137,21 +141,34 @@ def register():
         new_user = Users(
             username=data['username'],
             password=generate_password_hash(data['password']),  # Hash the password
-            role='Customer'
+            role=data['type']  # Set role based on type
         )
         db.session.add(new_user)
         db.session.flush()  # Flush to get the userid
 
-        # Create a new customer
-        new_customer = Customer(
-            name=data['full_name'],
-            email=data['email'],
-            contactnumber=data['mobile_number'],
-            outlet=data['outlet'],
-            userid=new_user.userid,
-            address=data['address']
-        )
-        db.session.add(new_customer)
+        if data['type'] == 'customer':
+            # Create a new customer
+            new_customer = Customer(
+                name=data['full_name'],
+                email=data['email'],
+                contactnumber=data['mobile_number'],
+                outlet=data['outlet'],
+                userid=new_user.userid,
+                address=data['address']
+            )
+            db.session.add(new_customer)
+        elif data['type'] == 'business':
+            # Create a new business
+            new_business = Business(
+                name=data['full_name'],
+                email=data['email'],
+                contactnumber=data['mobile_number'],
+                outlet=data['outlet'],
+                businessproof=data['business_registration_number'],  # Save business registration number
+                userid=new_user.userid,
+                address=data['address']
+            )
+            db.session.add(new_business)
 
         # Commit changes to the database
         db.session.commit()
@@ -166,7 +183,6 @@ def register():
         app.logger.error(f"Unexpected error: {str(e)}")
         return jsonify({'error': 'An unexpected error occurred'}), 500
 
-# Login Endpoint
 @app.route('/login', methods=['POST'])
 def login():
     data = request.json
@@ -184,18 +200,85 @@ def login():
     if not check_password_hash(user.password, data['password']):
         return jsonify({'error': 'Invalid username or password'}), 401
 
-    # Return the user's role
-    return jsonify({'message': 'Login successful', 'role': user.role}), 200
+    # Fetch branch information based on the user's role
+    branch = None
+    if user.role == 'Customer':
+        customer = Customer.query.filter_by(userid=user.userid).first()
+        if customer:
+            branch = {
+                'customerid': customer.customerid,
+                'name': customer.name,
+                'email': customer.email,
+                'contactnumber': customer.contactnumber,
+                'outlet': customer.outlet,  # Assuming `outlet` is a string field
+                'address': customer.address
+            }
+    elif user.role == 'Business':
+        business = Business.query.filter_by(userid=user.userid).first()
+        if business:
+            branch = {
+                'businessid': business.businessid,
+                'name': business.name,
+                'email': business.email,
+                'contactnumber': business.contactnumber,
+                'outlet': business.outlet,  # Assuming `outlet` is a string field
+                'address': business.address
+            }
+    elif user.role == 'Outlet':
+        outlet = Outlet.query.filter_by(userid=user.userid).first()
+        if outlet:
+            branch = {
+                'outid': outlet.outid,
+                'name': outlet.name,
+                'email': outlet.email,
+                'contactnumber': outlet.contactnumber,
+                'address': outlet.address
+            }
 
-# Customer Orders Endpoint
-@app.route('/customer-orders', methods=['GET'])
-def get_customer_orders():
+    # Return the user's role and branch information
+    return jsonify({
+        'message': 'Login successful',
+        'role': user.role,
+        'branch': branch  # Include the branch information in the response
+    }), 200
+
+
+@app.route('/customer-orders/<branch>', methods=['GET'])
+def get_customer_orders(branch):
     try:
-        # Fetch all customer orders from the database
-        orders = CustomerOrders.query.all()
+        # Debugging: Print the branch being queried
+        print(f"Fetching orders for branch: {branch}")
+
+        # Fetch customer orders for the specific branch by joining CustomerOrders and Customer tables
+        orders = (
+            CustomerOrders.query
+            .join(Customer, CustomerOrders.customerid == Customer.customerid)
+            .filter(Customer.outlet == branch)
+            .all()
+        )
+
+        # Debugging: Print the raw SQL query being executed
+        print(f"SQL Query: {str(orders)}")
+
         orders_data = []
 
+        # Debugging: Print the number of orders fetched
+        print(f"Number of orders fetched for branch '{branch}': {len(orders)}")
+
         for order in orders:
+            # Debugging: Print the details of each order
+            print("\n--- Order Details ---")
+            print(f"Order ID: {order.orderid}")
+            print(f"Customer Name: {order.name}")
+            print(f"2.5 Kg: {order.twoandhalfkg}")
+            print(f"5 Kg: {order.fivekg}")
+            print(f"12.5 Kg: {order.twelevekg}")
+            print(f"Status: {order.status}")
+            print(f"Total: Rs.{order.total}")
+            print(f"Created Date: {order.createddate}")
+            print(f"Tank Details - 2.5 Kg: {order.twoandhalfkgtank}, 5 Kg: {order.fivekgtank}, 12.5 Kg: {order.twelevekgtank}")
+            print("-" * 40)  # Separator for readability
+
             orders_data.append({
                 'id': order.orderid,
                 'customer': order.name,
@@ -206,7 +289,7 @@ def get_customer_orders():
                 ],
                 'Date': order.createddate.strftime('%d %b, %Y'),
                 'Status': order.status,
-                'Total': f"${order.total}",
+                'Total': f"Rs.{order.total}",
                 'Tank': [
                     f"2.5 Kg : {order.twoandhalfkgtank}",
                     f"5 Kg : {order.fivekgtank}",
@@ -218,8 +301,70 @@ def get_customer_orders():
         return jsonify(orders_data), 200
 
     except Exception as e:
+        # Debugging: Print the error message
+        print(f"Error fetching orders: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
+
+@app.route('/business-orders/<branch>', methods=['GET'])
+def get_business_orders(branch):
+    try:
+        # Fetch business orders for the specific branch
+        orders = BusinessOrders.query.filter_by(outlet=branch).all()
+        orders_data = []
+
+        for order in orders:
+            orders_data.append({
+                'id': order.businessorderid,
+                'customer': order.name,
+                'order': [
+                    f"2.5 Kg : {order.twoandhalfkg}",
+                    f"5 Kg : {order.fivekg}",
+                    f"12.5 Kg : {order.twelevekg}",
+                    f"37 Kg : {order.thirtysevenkg}"
+                ],
+                'Date': order.createddate.strftime('%d %b, %Y'),
+                'Status': order.status,
+                'Total': f"Rs.{order.total}",
+                'Tank': [
+                    f"2.5 Kg : {order.twoandhalfkgtank}",
+                    f"5 Kg : {order.fivekgtank}",
+                    f"12.5 Kg : {order.twelevekgtank}",
+                    f"37 Kg : {order.thirtysevenkgtank}"
+                ],
+            })
+
+        return jsonify(orders_data), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/outlet-orders/<outname>', methods=['GET'])
+def get_outlet_orders(outname):
+    try:
+        # Fetch orders for the specific outlet
+        orders = OutletOrders.query.filter_by(outname=outname).all()
+        orders_data = []
+
+        for order in orders:
+            orders_data.append({
+                'id': order.orderid,
+                'customer': order.outname,  # Assuming outname is the customer name
+                'order': [
+                    f"2.5 Kg : {order.twoandhalfkg}",
+                    f"5 Kg : {order.fivekg}",
+                    f"12.5 Kg : {order.twelevekg}",
+                    f"37 Kg : {order.thirtysevenkg}"
+                ],
+                'Date': order.createdon.strftime('%d %b, %Y'),  # Use createdon or orderedon
+                'Status': order.status,
+                'Total': f"${order.total}"
+            })
+
+        return jsonify(orders_data), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 # Run the Flask app
 if __name__ == '__main__':
