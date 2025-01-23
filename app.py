@@ -460,6 +460,74 @@ def get_outlet_orders(branch):
         logger.error(f"Error fetching outlet orders for branch {branch}: {str(e)}")
         return jsonify({'error': 'An internal server error occurred'}), 500
 
+
+@app.route('/waitlist-orders/<branch>', methods=['GET'])
+def get_waitlist_orders(branch):
+    try:
+        # Debugging: Print the branch being queried
+        logger.info(f"Fetching waitlist orders for branch: {branch}")
+
+        # Input validation
+        if not branch or branch.lower() == 'null':
+            logger.error(f"Invalid branch: {branch}")
+            return jsonify({'error': 'Invalid branch'}), 400
+
+        # Fetch waitlist orders for the specific branch
+        orders = (
+            CustomerOrders.query
+            .join(Customer, CustomerOrders.customerid == Customer.customerid)
+            .filter(
+                Customer.outlet == branch,  # Filter by branch
+                CustomerOrders.status == 'Waiting'  # Filter by status "Waiting"
+            )
+            .options(joinedload(CustomerOrders.customer))  # Eager load customer data
+            .all()
+        )
+
+        # Debugging: Print the number of orders fetched
+        logger.info(f"Number of waitlist orders fetched for branch '{branch}': {len(orders)}")
+
+        if not orders:
+            logger.info(f"No waitlist orders found for branch: {branch}")
+            return jsonify([]), 200
+
+        # Prepare response data
+        orders_data = []
+        for order in orders:
+            # Debugging: Print the details of each order
+            logger.info(f"\n--- Waitlist Order Details ---")
+            logger.info(f"Order ID: {order.orderid}")
+            logger.info(f"Customer Name: {order.customer.name}")
+            logger.info(f"2.5 Kg: {order.twoandhalfkg}")
+            logger.info(f"5 Kg: {order.fivekg}")
+            logger.info(f"12.5 Kg: {order.twelevekg}")
+            logger.info(f"Status: {order.status}")
+            logger.info(f"Total: Rs.{order.total}")
+            logger.info(f"Created Date: {order.createddate}")
+            logger.info("-" * 40)  # Separator for readability
+
+            orders_data.append({
+                'id': order.orderid,
+                'customer': order.customer.name,  # Use customer name
+                'order': [
+                    f"2.5 Kg : {order.twoandhalfkg}",
+                    f"5 Kg : {order.fivekg}",
+                    f"12.5 Kg : {order.twelevekg}"
+                ],
+                'Date': order.createddate.strftime('%d %b, %Y'),  # Format date
+                'Status': order.status,
+                'Total': f"Rs.{order.total}"
+            })
+
+        return jsonify(orders_data), 200
+
+    except SQLAlchemyError as e:
+        logger.error(f"Database error fetching waitlist orders for branch {branch}: {str(e)}")
+        return jsonify({'error': 'A database error occurred'}), 500
+    except Exception as e:
+        logger.error(f"Error fetching waitlist orders for branch {branch}: {str(e)}")
+        return jsonify({'error': 'An internal server error occurred'}), 500
+
 # Run the Flask app
 if __name__ == '__main__':
     with app.app_context():
