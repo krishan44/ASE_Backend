@@ -144,6 +144,18 @@ class OutletOrders(db.Model):
     # Relationships
     outlet_entity = db.relationship('Outlet', backref='outlet_orders')
 
+
+class Stock(db.Model):
+    __tablename__ = 'stock'
+
+    id = db.Column(db.Integer, primary_key=True)
+    kg_2_5 = db.Column("2.5Kg", db.Integer, nullable=False)
+    kg_5 = db.Column("5Kg", db.Integer, nullable=False)
+    kg_12_5 = db.Column("12.5Kg", db.Integer, nullable=False)
+    kg_37_5 = db.Column("37.5Kg", db.Integer, nullable=False)
+    outletname = db.Column(db.String, nullable=False)
+
+
 @app.route('/register', methods=['POST'])
 def register():
     data = request.json
@@ -207,10 +219,10 @@ def register():
         app.logger.error(f"Unexpected error: {str(e)}")
         return jsonify({'error': 'An unexpected error occurred'}), 500
 
+
 @app.route('/login', methods=['POST'])
 def login():
     data = request.json
-
     # Validate required fields
     if 'username' not in data or 'password' not in data:
         return jsonify({'error': 'Username and password are required'}), 400
@@ -224,20 +236,24 @@ def login():
     if not check_password_hash(user.password, data['password']):
         return jsonify({'error': 'Invalid username or password'}), 401
 
-    # Fetch branch information based on the user's role
+    # Initialize branch and customerid
     branch = None
-    if user.role == 'Customer':
+    customerid = None
+
+    # Determine branch and customerid based on user role
+    if user.role.lower() == 'customer':
         customer = Customer.query.filter_by(userid=user.userid).first()
         if customer:
+            customerid = customer.customerid
             branch = {
-                'customerid': customer.customerid,
+                'customerid': customerid,
                 'name': customer.name,
                 'email': customer.email,
                 'contactnumber': customer.contactnumber,
-                'outlet': customer.outlet,  # Assuming `outlet` is a string field
+                'outlet': customer.outlet,
                 'address': customer.address
             }
-    elif user.role == 'Business':
+    elif user.role.lower() == 'business':
         business = Business.query.filter_by(userid=user.userid).first()
         if business:
             branch = {
@@ -245,10 +261,10 @@ def login():
                 'name': business.name,
                 'email': business.email,
                 'contactnumber': business.contactnumber,
-                'outlet': business.outlet,  # Assuming `outlet` is a string field
+                'outlet': business.outlet,
                 'address': business.address
             }
-    elif user.role == 'Outlet':
+    elif user.role.lower() == 'outlet':
         outlet = Outlet.query.filter_by(userid=user.userid).first()
         if outlet:
             branch = {
@@ -259,11 +275,14 @@ def login():
                 'address': outlet.address
             }
 
-    # Return the user's role and branch information
+    # Return response
     return jsonify({
         'message': 'Login successful',
-        'role': user.role,
-        'branch': branch  # Include the branch information in the response
+        'role': user.role.lower(),
+        'username': user.username,
+        'userid': user.userid,
+        'customerid': customerid,
+        'branch': branch
     }), 200
 
 
@@ -527,6 +546,94 @@ def get_waitlist_orders(branch):
     except Exception as e:
         logger.error(f"Error fetching waitlist orders for branch {branch}: {str(e)}")
         return jsonify({'error': 'An internal server error occurred'}), 500
+
+# Update stock endpoint
+@app.route('/update-stock/<branch>', methods=['POST'])
+def update_stock(branch):
+    try:
+        data = request.get_json()  # Parse JSON data from the request
+
+        # Validate required fields
+        if 'stockLevels' not in data:
+            return jsonify({'error': 'Stock levels are required'}), 400
+
+        stock_levels = data['stockLevels']
+
+        # Fetch the stock record for the branch
+        stock = Stock.query.filter_by(outletname=branch).first()  # Use lowercase 'outletname'
+
+        if not stock:
+            return jsonify({'error': f'Stock record for branch {branch} not found'}), 404
+
+        # Update the stock levels
+        stock.kg_2_5 = stock_levels.get('2.5Kg', stock.kg_2_5)
+        stock.kg_5 = stock_levels.get('5Kg', stock.kg_5)
+        stock.kg_12_5 = stock_levels.get('12.5Kg', stock.kg_12_5)
+        stock.kg_37_5 = stock_levels.get('37.5Kg', stock.kg_37_5)
+
+        # Commit changes to the database
+        db.session.commit()
+
+        return jsonify({'message': 'Stock updated successfully'}), 200
+
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        logger.error(f"Database error: {str(e)}")
+        return jsonify({'error': 'Database error'}), 500
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        return jsonify({'error': 'An unexpected error occurred'}), 500
+
+
+
+
+    # Customer Section
+
+@app.route('/customer-orders/<int:customerid>', methods=['GET'])
+def get_orders_by_customer_id(customerid):
+    logger.debug(f"Fetching orders for customer ID: {customerid}")
+
+    try:
+        # Fetch orders for the specific customer
+        orders = CustomerOrders.query.filter_by(customerid=customerid).all()
+
+        logger.debug(f"Number of orders found: {len(orders)}")
+
+        if not orders:
+            logger.debug("No orders found for this customer")
+            return jsonify({'message': 'No orders found for this customer'}), 200
+
+        # Format the orders data
+        orders_data = []
+        for order in orders:
+            orders_data.append({
+                'id': order.orderid,
+                'customer': order.name,
+                'order': [
+                    f"2.5 Kg : {order.twoandhalfkg}",
+                    f"5 Kg : {order.fivekg}",
+                    f"12.5 Kg : {order.twelevekg}"
+                ],
+                'Date': order.createddate.strftime('%d %b, %Y'),
+                'Status': order.status,
+                'Total': f"Rs.{order.total}",
+                'Tank': [
+                    f"2.5 Kg : {order.twoandhalfkgtank}",
+                    f"5 Kg : {order.fivekgtank}",
+                    f"12.5 Kg : {order.twelevekgtank}"
+                ],
+                'contact': '07723112123'  # Add contact if available in the database
+            })
+
+        logger.debug(f"Orders data: {orders_data}")
+        return jsonify(orders_data), 200
+
+    except Exception as e:
+        logger.error(f"Error fetching customer orders: {str(e)}", exc_info=True)
+        return jsonify({'error': 'An internal server error occurred'}), 500
+
+if __name__ == '__main__':
+    app.run(debug=True)
 
 # Run the Flask app
 if __name__ == '__main__':
