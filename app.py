@@ -632,8 +632,50 @@ def get_orders_by_customer_id(customerid):
         logger.error(f"Error fetching customer orders: {str(e)}", exc_info=True)
         return jsonify({'error': 'An internal server error occurred'}), 500
 
-if __name__ == '__main__':
-    app.run(debug=True)
+@app.route('/business-orders/<int:businessid>', methods=['GET'])
+def get_orders_by_business_id(businessid):
+    logger.debug(f"Fetching orders for business ID: {businessid}")
+
+    try:
+        # Fetch orders for the specific business
+        orders = BusinessOrders.query.filter_by(businessid=businessid).all()
+
+        logger.debug(f"Number of orders found: {len(orders)}")
+
+        if not orders:
+            logger.debug("No orders found for this business")
+            return jsonify({'message': 'No orders found for this business'}), 200
+
+        # Format the orders data
+        orders_data = []
+        for order in orders:
+            orders_data.append({
+                'id': order.businessorderid,
+                'customer': order.name,
+                'order': [
+                    f"2.5 Kg : {order.twoandhalfkg}",
+                    f"5 Kg : {order.fivekg}",
+                    f"12.5 Kg : {order.twelevekg}",
+                    f"37.5 Kg : {order.thirtysevenkg}"
+                ],
+                'Date': order.createddate.strftime('%d %b, %Y'),
+                'Status': order.status,
+                'Total': f"Rs.{order.total}",
+                'Tank': [
+                    f"2.5 Kg : {order.twoandhalfkgtank}",
+                    f"5 Kg : {order.fivekgtank}",
+                    f"12.5 Kg : {order.twelevekgtank}",
+                    f"37.5 Kg : {order.thirtysevenkgtank}"
+                ],
+                'contact': '07723112123'  # Add contact if available in the database
+            })
+
+        logger.debug(f"Orders data: {orders_data}")
+        return jsonify(orders_data), 200
+
+    except Exception as e:
+        logger.error(f"Error fetching business orders: {str(e)}", exc_info=True)
+        return jsonify({'error': 'An internal server error occurred'}), 500
 
 # Run the Flask app
 if __name__ == '__main__':
