@@ -2,6 +2,8 @@ from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from datetime import datetime
+
+from sqlalchemy.testing.suite.test_reflection import users
 from werkzeug.security import generate_password_hash, check_password_hash
 import os
 from sqlalchemy.exc import SQLAlchemyError
@@ -676,6 +678,178 @@ def get_orders_by_business_id(businessid):
     except Exception as e:
         logger.error(f"Error fetching business orders: {str(e)}", exc_info=True)
         return jsonify({'error': 'An internal server error occurred'}), 500
+
+
+@app.route('/create-order', methods=['POST'])
+def create_order():
+    data = request.get_json()
+
+    # Validate required fields
+    required_fields = ['orderQuantities', 'tankQuantities', 'orderDate', 'userRole', 'userId', 'customerId', 'businessId']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({'error': f'{field} is missing'}), 400
+
+    user_role = data['userRole']
+    user_id = data['userId']
+    customer_id = data['customerId']
+    business_id = data['businessId']
+    order_date_str = data['orderDate']
+    order_quantities = data['orderQuantities']
+    tank_quantities = data['tankQuantities']
+
+    # Define prices for each cylinder size
+    PRICES = {
+        'small': 500,        # 2.5Kg
+        'medium': 1000,      # 5Kg
+        'large': 2500,       # 12.5Kg
+        'extraLarge': 7500   # 37.5Kg
+    }
+
+    # Calculate total price
+    total = 0
+    for size in ['small', 'medium', 'large', 'extraLarge']:
+        qty = order_quantities.get(size, 0)
+        if size in PRICES:
+            total += qty * PRICES[size]
+
+    # Parse order date
+    try:
+        ordered_date = datetime.strptime(order_date_str, '%Y-%m-%d')
+    except ValueError:
+        return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD.'}), 400
+
+    try:
+        if user_role == 'customer':
+            # Fetch customer name from the database
+            customer = Customer.query.filter_by(customerid=customer_id).first()
+            if not customer:
+                return jsonify({'error': 'Customer not found'}), 404
+
+            # Create a new order in the CustomerOrders table
+            new_order = CustomerOrders(
+                name=customer.name,  # Use the customer's name
+                twoandhalfkg=order_quantities.get('small', 0),
+                fivekg=order_quantities.get('medium', 0),
+                twelevekg=order_quantities.get('large', 0),
+                twoandhalfkgtank=tank_quantities.get('small', 0),
+                fivekgtank=tank_quantities.get('medium', 0),
+                twelevekgtank=tank_quantities.get('large', 0),
+                ordereddate=ordered_date,
+                status='Pending',
+                total=total,
+                customerid=customer_id
+            )
+            db.session.add(new_order)
+        elif user_role == 'business':
+            # Fetch business name from the database
+            business = Business.query.filter_by(businessid=business_id).first()
+            if not business:
+                return jsonify({'error': 'Business not found'}), 404
+
+            # Create a new order in the BusinessOrders table
+            new_order = BusinessOrders(
+                name=business.name,  # Use the business's name
+                twoandhalfkg=order_quantities.get('small', 0),
+                fivekg=order_quantities.get('medium', 0),
+                twelevekg=order_quantities.get('large', 0),
+                thirtysevenkg=order_quantities.get('extraLarge', 0),
+                twoandhalfkgtank=tank_quantities.get('small', 0),
+                fivekgtank=tank_quantities.get('medium', 0),
+                twelevekgtank=tank_quantities.get('large', 0),
+                thirtysevenkgtank=tank_quantities.get('extraLarge', 0),
+                ordereddate=ordered_date,
+                status='Pending',
+                total=total,
+                businessid=business_id
+            )
+            db.session.add(new_order)
+        else:
+            return jsonify({'error': 'Invalid user role'}), 400
+
+        db.session.commit()
+        return jsonify({'message': 'Order created successfully'}), 201
+
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        logger.error(f"Database error: {str(e)}")
+        return jsonify({'error': 'Database error'}), 500
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        return jsonify({'error': 'An unexpected error occurred'}), 500
+
+
+@app.route('/api/user/profile/<int:user_id>', methods=['PUT'])
+def update_user_profile(user_id):
+    user = users.query.get(user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    data = request.get_json()
+    user.firstName = data.get('firstName', user.firstName)
+    user.lastName = data.get('lastName', user.lastName)
+    user.email = data.get('email', user.email)
+    user.phone = data.get('phone', user.phone)
+    user.address = data.get('address', user.address)
+
+    db.session.commit()
+    return jsonify({'message': 'Profile updated successfully'})
+
+@app.route('/profile/<string:user_role>/<int:user_id>', methods=['GET', 'PUT', 'DELETE'])
+def handle_profile(user_role, user_id):
+    try:
+        # Determine the model based on the user role
+        if user_role == 'customer':
+            model = Customer
+        elif user_role == 'business':
+            model = Business
+        else:
+            return jsonify({'error': 'Invalid user role'}), 400
+
+        # Fetch the profile from the database
+        profile = model.query.get(user_id)
+        if not profile:
+            return jsonify({'error': 'Profile not found'}), 404
+
+        # Handle GET request (fetch profile data)
+        if request.method == 'GET':
+            return jsonify({
+                'name': profile.name,
+                'email': profile.email,
+                'contactNumber': profile.contactnumber,
+                'address': profile.address
+            })
+
+        # Handle PUT request (update profile data)
+        elif request.method == 'PUT':
+            data = request.get_json()
+            if not data:
+                return jsonify({'error': 'No data provided'}), 400
+
+            # Validate and update profile fields
+            if 'name' in data:
+                profile.name = data['name']
+            if 'email' in data:
+                profile.email = data['email']
+            if 'contactNumber' in data:
+                profile.contactnumber = data['contactNumber']
+            if 'address' in data:
+                profile.address = data['address']
+
+            db.session.commit()
+            return jsonify({'message': 'Profile updated successfully'})
+
+        # Handle DELETE request (delete profile)
+        elif request.method == 'DELETE':
+            db.session.delete(profile)
+            db.session.commit()
+            return jsonify({'message': 'Profile deleted successfully'})
+
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        return jsonify({'error': 'Database error', 'details': str(e)}), 500
+    except Exception as e:
+        return jsonify({'error': 'An unexpected error occurred', 'details': str(e)}), 500
 
 # Run the Flask app
 if __name__ == '__main__':
