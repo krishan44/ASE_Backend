@@ -562,7 +562,7 @@ def update_stock(branch):
         stock_levels = data['stockLevels']
 
         # Fetch the stock record for the branch
-        stock = Stock.query.filter_by(outletname=branch).first()  # Use lowercase 'outletname'
+        stock = Stock.query.filter_by(outletname=branch).first()  # Use 'outletname' to filter
 
         if not stock:
             return jsonify({'error': f'Stock record for branch {branch} not found'}), 404
@@ -586,10 +586,33 @@ def update_stock(branch):
         logger.error(f"Unexpected error: {str(e)}")
         return jsonify({'error': 'An unexpected error occurred'}), 500
 
+# Fetch stock levels endpoint
+@app.route('/stock-levels/<branch>', methods=['GET'])
+def get_stock_levels(branch):
+    try:
+        # Fetch the stock record for the branch
+        stock = Stock.query.filter_by(outletname=branch).first()
 
+        if not stock:
+            return jsonify({'error': f'Stock record for branch {branch} not found'}), 404
 
+        # Prepare the stock levels in the required format
+        stock_levels = {
+            "2.5Kg": stock.kg_2_5,
+            "5Kg": stock.kg_5,
+            "12.5Kg": stock.kg_12_5,
+            "37.5Kg": stock.kg_37_5
+        }
 
-    # Customer Section
+        return jsonify(stock_levels), 200
+
+    except SQLAlchemyError as e:
+        logger.error(f"Database error: {str(e)}")
+        return jsonify({'error': 'Database error'}), 500
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        return jsonify({'error': 'An unexpected error occurred'}), 500
+        return jsonify({'error': 'An unexpected error occurred'}), 500
 
 @app.route('/customer-orders/<int:customerid>', methods=['GET'])
 def get_orders_by_customer_id(customerid):
