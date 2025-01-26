@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from datetime import datetime
-
 from sqlalchemy.testing.suite.test_reflection import users
 from werkzeug.security import generate_password_hash, check_password_hash
 import os
@@ -485,66 +484,62 @@ def get_outlet_orders(branch):
 @app.route('/waitlist-orders/<branch>', methods=['GET'])
 def get_waitlist_orders(branch):
     try:
-        # Debugging: Print the branch being queried
-        logger.info(f"Fetching waitlist orders for branch: {branch}")
-
-        # Input validation
-        if not branch or branch.lower() == 'null':
-            logger.error(f"Invalid branch: {branch}")
-            return jsonify({'error': 'Invalid branch'}), 400
-
-        # Fetch waitlist orders for the specific branch
-        orders = (
+        # Fetch customer orders
+        customer_orders = (
             CustomerOrders.query
             .join(Customer, CustomerOrders.customerid == Customer.customerid)
-            .filter(
-                Customer.outlet == branch,  # Filter by branch
-                CustomerOrders.status == 'Waiting'  # Filter by status "Waiting"
-            )
-            .options(joinedload(CustomerOrders.customer))  # Eager load customer data
+            .filter(Customer.outlet == branch, CustomerOrders.status == 'Waiting')
+            .options(joinedload(CustomerOrders.customer))
             .all()
         )
 
-        # Debugging: Print the number of orders fetched
-        logger.info(f"Number of waitlist orders fetched for branch '{branch}': {len(orders)}")
-
-        if not orders:
-            logger.info(f"No waitlist orders found for branch: {branch}")
-            return jsonify([]), 200
+        # Fetch business orders
+        business_orders = (
+            BusinessOrders.query
+            .join(Business, BusinessOrders.businessid == Business.businessid)
+            .filter(Business.outlet == branch, BusinessOrders.status == 'Waiting')
+            .options(joinedload(BusinessOrders.business))
+            .all()
+        )
 
         # Prepare response data
         orders_data = []
-        for order in orders:
-            # Debugging: Print the details of each order
-            logger.info(f"\n--- Waitlist Order Details ---")
-            logger.info(f"Order ID: {order.orderid}")
-            logger.info(f"Customer Name: {order.customer.name}")
-            logger.info(f"2.5 Kg: {order.twoandhalfkg}")
-            logger.info(f"5 Kg: {order.fivekg}")
-            logger.info(f"12.5 Kg: {order.twelevekg}")
-            logger.info(f"Status: {order.status}")
-            logger.info(f"Total: Rs.{order.total}")
-            logger.info(f"Created Date: {order.createddate}")
-            logger.info("-" * 40)  # Separator for readability
 
+        # Add customer orders
+        for order in customer_orders:
             orders_data.append({
                 'id': order.orderid,
-                'customer': order.customer.name,  # Use customer name
+                'customer': order.customer.name,
                 'order': [
                     f"2.5 Kg : {order.twoandhalfkg}",
                     f"5 Kg : {order.fivekg}",
                     f"12.5 Kg : {order.twelevekg}"
                 ],
-                'Date': order.createddate.strftime('%d %b, %Y'),  # Format date
+                'Date': order.createddate.strftime('%d %b, %Y'),
                 'Status': order.status,
-                'Total': f"Rs.{order.total}"
+                'Total': f"Rs.{order.total}",
+                'type': 'customer'  # Add a type field
+            })
+
+        # Add business orders
+        for order in business_orders:
+            orders_data.append({
+                'id': order.businessorderid,
+                'customer': order.business.name,
+                'order': [
+                    f"2.5 Kg : {order.twoandhalfkg}",
+                    f"5 Kg : {order.fivekg}",
+                    f"12.5 Kg : {order.twelevekg}",
+                    f"37 Kg : {order.thirtysevenkg}"
+                ],
+                'Date': order.createddate.strftime('%d %b, %Y'),
+                'Status': order.status,
+                'Total': f"Rs.{order.total}",
+                'type': 'business'  # Add a type field
             })
 
         return jsonify(orders_data), 200
 
-    except SQLAlchemyError as e:
-        logger.error(f"Database error fetching waitlist orders for branch {branch}: {str(e)}")
-        return jsonify({'error': 'A database error occurred'}), 500
     except Exception as e:
         logger.error(f"Error fetching waitlist orders for branch {branch}: {str(e)}")
         return jsonify({'error': 'An internal server error occurred'}), 500
@@ -611,7 +606,6 @@ def get_stock_levels(branch):
         return jsonify({'error': 'Database error'}), 500
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
-        return jsonify({'error': 'An unexpected error occurred'}), 500
         return jsonify({'error': 'An unexpected error occurred'}), 500
 
 @app.route('/customer-orders/<int:customerid>', methods=['GET'])
@@ -873,6 +867,69 @@ def handle_profile(user_role, user_id):
         return jsonify({'error': 'Database error', 'details': str(e)}), 500
     except Exception as e:
         return jsonify({'error': 'An unexpected error occurred', 'details': str(e)}), 500
+
+
+@app.route('/customer-orders/<int:order_id>', methods=['PUT'])
+def update_customer_order(order_id):
+    data = request.get_json()
+    order = CustomerOrders.query.get_or_404(order_id)
+
+    order.status = data.get('status', order.status)
+    if data.get('completeddate'):
+        order.completeddate = datetime.fromisoformat(data['completeddate'])
+
+    db.session.commit()
+    return jsonify({'message': 'Order updated successfully'}), 200
+
+@app.route('/business-orders/<int:business_order_id>', methods=['PUT'])
+def update_business_order(business_order_id):
+    data = request.get_json()
+    order = BusinessOrders.query.get_or_404(business_order_id)
+
+    order.status = data.get('status', order.status)
+    if data.get('completeddate'):
+        order.completeddate = datetime.fromisoformat(data['completeddate'])
+
+    db.session.commit()
+    return jsonify({'message': 'Business order updated successfully'}), 200
+
+@app.route('/outlet-orders', methods=['POST'])
+def create_outlet_order():
+    try:
+        data = request.get_json()
+
+        # Validate required fields
+        if not data.get('outname') or not data.get('orderedon'):
+            return jsonify({'error': 'Missing required fields'}), 400
+
+        # Convert the orderedon string to a datetime object
+        orderedon = datetime.fromisoformat(data['orderedon'])
+
+        # Create a new OutletOrders record
+        new_order = OutletOrders(
+            outname=data['outname'],
+            twoandhalfkg=data.get('twoandhalfkg', 0),
+            fivekg=data.get('fivekg', 0),
+            twelevekg=data.get('twelevekg', 0),
+            thirtysevenkg=data.get('thirtysevenkg', 0),
+            total=data.get('total', 0),
+            status=data.get('status', 'Pending'),
+            createdon=datetime.utcnow(),
+            orderedon=orderedon,  # Use the converted datetime object
+            outid=1  # Replace with the actual outlet ID if available
+        )
+
+        db.session.add(new_order)
+        db.session.commit()
+
+        return jsonify({'message': 'Order created successfully', 'order_id': new_order.orderid}), 201
+
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error creating outlet order: {str(e)}")
+        return jsonify({'error': 'An internal server error occurred'}), 500
+
+
 
 # Run the Flask app
 if __name__ == '__main__':
