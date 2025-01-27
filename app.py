@@ -10,7 +10,7 @@ from sqlalchemy.orm import joinedload
 import logging
 from flask import jsonify
 from sqlalchemy.orm import joinedload
-
+from sqlalchemy.exc import IntegrityError
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -275,6 +275,10 @@ def login():
                 'contactnumber': outlet.contactnumber,
                 'address': outlet.address
             }
+    elif user.role.lower() == 'admin':
+        branch = {
+            'name': 'admin'
+        }
 
     # Return response
     return jsonify({
@@ -929,7 +933,153 @@ def create_outlet_order():
         logger.error(f"Error creating outlet order: {str(e)}")
         return jsonify({'error': 'An internal server error occurred'}), 500
 
+@app.route('/outlet-orders-admin', methods=['GET'])
+def get_outlet_orders_admin():
+    try:
+        # Query all orders from the OutletOrders table
+        orders = OutletOrders.query.all()
 
+        # Convert the orders to a list of dictionaries
+        orders_list = []
+        for order in orders:
+            orders_list.append({
+                'orderid': order.orderid,
+                'outname': order.outname,
+                'twoandhalfkg': order.twoandhalfkg,
+                'fivekg': order.fivekg,
+                'twelevekg': order.twelevekg,
+                'thirtysevenkg': order.thirtysevenkg,
+                'total': float(order.total) if order.total else None,
+                'status': order.status,
+                'createdon': order.createdon.strftime('%Y-%m-%d') if order.createdon else None,  # Format as YYYY-MM-DD
+                'orderedon': order.orderedon.strftime('%Y-%m-%d') if order.orderedon else None,  # Format as YYYY-MM-DD
+                'completedon': order.completedon.strftime('%Y-%m-%d') if order.completedon else None,  # Format as YYYY-MM-DD
+                'outid': order.outid
+            })
+
+        # Return the orders as JSON
+        return jsonify(orders_list), 200
+
+    except Exception as e:
+        # Handle any errors
+        return jsonify({'error': str(e)}), 500
+
+
+# Get all outlets
+@app.route('/outlets', methods=['GET'])
+def get_outlets():
+    try:
+        outlets = Outlet.query.all()
+        outlets_list = []
+
+        for outlet in outlets:
+            outlets_list.append({
+                'id': outlet.outid,
+                'name': outlet.name,
+                'email': outlet.email,
+                'contactNumber': outlet.contactnumber,
+                'address': outlet.address,
+                'createdAt': outlet.createdat.strftime('%Y-%m-%d %H:%M:%S'),
+                'updatedAt': outlet.updatedat.strftime('%Y-%m-%d %H:%M:%S') if outlet.updatedat else None
+            })
+
+        return jsonify(outlets_list), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/outlets', methods=['POST'])
+def create_outlet():
+    try:
+        data = request.get_json()
+
+        # Validate required fields
+        required_fields = ['name', 'email', 'contactNumber', 'address', 'username', 'password']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({'error': f'Missing required field: {field}'}), 400
+
+        # First create the user
+        hashed_password = generate_password_hash(data['password'])
+        new_user = Users(
+            username=data['username'],
+            password=hashed_password,
+            email=data['email'],
+            role='outlet'
+        )
+
+        db.session.add(new_user)
+        db.session.flush()  # This will assign the userid without committing
+
+        # Create new outlet with the user ID
+        new_outlet = Outlet(
+            name=data['name'],
+            email=data['email'],
+            contactnumber=data['contactNumber'],
+            address=data['address'],
+            userid=new_user.userid  # Use the newly created user's ID
+        )
+
+        db.session.add(new_outlet)
+        db.session.commit()
+
+        # Return the created outlet (excluding sensitive information)
+        return jsonify({
+            'id': new_outlet.outid,
+            'name': new_outlet.name,
+            'email': new_outlet.email,
+            'contactNumber': new_outlet.contactnumber,
+            'address': new_outlet.address,
+            'createdAt': new_outlet.createdat.strftime('%Y-%m-%d %H:%M:%S'),
+            'updatedAt': new_outlet.updatedat.strftime('%Y-%m-%d %H:%M:%S') if new_outlet.updatedat else None
+        }), 201
+
+    except IntegrityError as e:
+        db.session.rollback()
+        error_message = str(e.orig).lower()
+        if 'unique constraint' in error_message:
+            if 'username' in error_message:
+                return jsonify({'error': 'Username already exists'}), 400
+            if 'email' in error_message:
+                return jsonify({'error': 'Email already exists'}), 400
+        return jsonify({'error': str(e)}), 400
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+
+# Update the delete route to handle user deletion as well
+@app.route('/outlets/<int:outlet_id>', methods=['DELETE'])
+def delete_outlet(outlet_id):
+    try:
+        outlet = Outlet.query.get(outlet_id)
+
+        if not outlet:
+            return jsonify({'error': 'Outlet not found'}), 404
+
+        # Check if outlet has any orders before deletion
+        if outlet.orders:
+            return jsonify({'error': 'Cannot delete outlet with existing orders'}), 400
+
+        # Get the associated user
+        user = Users.query.get(outlet.userid)
+
+        # Delete the outlet first (due to foreign key constraint)
+        db.session.delete(outlet)
+
+        # Delete the associated user if exists
+        if user:
+            db.session.delete(user)
+
+        db.session.commit()
+
+        return jsonify({'message': 'Outlet and associated user deleted successfully'}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
 
 # Run the Flask app
 if __name__ == '__main__':
