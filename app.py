@@ -1,3 +1,5 @@
+import requests
+import json
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
@@ -145,7 +147,6 @@ class OutletOrders(db.Model):
     # Relationships
     outlet_entity = db.relationship('Outlet', backref='outlet_orders')
 
-
 class Stock(db.Model):
     __tablename__ = 'stock'
 
@@ -155,7 +156,6 @@ class Stock(db.Model):
     kg_12_5 = db.Column("12.5Kg", db.Integer, nullable=False)
     kg_37_5 = db.Column("37.5Kg", db.Integer, nullable=False)
     outletname = db.Column(db.String, nullable=False)
-
 
 @app.route('/register', methods=['POST'])
 def register():
@@ -509,8 +509,11 @@ def get_waitlist_orders(branch):
         # Prepare response data
         orders_data = []
 
-        # Add customer orders
+        # Add customer orders and check for confirmation
         for order in customer_orders:
+            if order.status == 'Confirmed':
+                send_confirmation_email(order.customer.email, order.orderid)  # Send email for confirmed order
+
             orders_data.append({
                 'id': order.orderid,
                 'customer': order.customer.name,
@@ -525,8 +528,11 @@ def get_waitlist_orders(branch):
                 'type': 'customer'  # Add a type field
             })
 
-        # Add business orders
+        # Add business orders and check for confirmation
         for order in business_orders:
+            if order.status == 'Confirmed':
+                send_confirmation_email(order.business.email, order.businessorderid)  # Send email for confirmed order
+
             orders_data.append({
                 'id': order.businessorderid,
                 'customer': order.business.name,
@@ -547,6 +553,43 @@ def get_waitlist_orders(branch):
     except Exception as e:
         logger.error(f"Error fetching waitlist orders for branch {branch}: {str(e)}")
         return jsonify({'error': 'An internal server error occurred'}), 500
+
+
+def send_confirmation_email(to_email, order_id):
+    """
+    Sends a confirmation email when an order status is confirmed.
+    """
+    try:
+        url = "https://sandbox.api.mailtrap.io/api/send/3425841"  # Mailtrap API endpoint (change to real one if necessary)
+        headers = {
+            "Authorization": "Bearer 28a887c551ad5c522d33bd218443f35f",  # Replace with your Mailtrap API token
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "from": {"email": "test@example.com", "name": "Order System"},
+            "to": [{"email": to_email}],  # Send email to the business/customer email
+            "subject": "Your Order has been Confirmed",
+            "text": (
+                f"Dear Customer/Business,\n\n"
+                f"Good news! Your order with Order ID {order_id} has been confirmed.\n\n"
+                f"Thank you for your business, and we look forward to serving you further.\n\n"
+                f"Best regards,\n"
+                f"Order System"
+            ),
+            "category": "Order Confirmation"
+        }
+
+        response = requests.post(url, headers=headers, data=json.dumps(payload))
+
+        if response.status_code == 200:
+            logger.info("Confirmation email sent successfully.")
+        else:
+            logger.error(f"Failed to send email. Status code: {response.status_code}")
+            logger.error(f"Response: {response.text}")
+
+    except Exception as e:
+        logger.error(f"Error sending email: {str(e)}")
+
 
 # Update stock endpoint
 @app.route('/update-stock/<branch>', methods=['POST'])
@@ -721,10 +764,10 @@ def create_order():
 
     # Define prices for each cylinder size
     PRICES = {
-        'small': 500,        # 2.5Kg
-        'medium': 1000,      # 5Kg
-        'large': 2500,       # 12.5Kg
-        'extraLarge': 7500   # 37.5Kg
+        'small': 500,  # 2.5Kg
+        'medium': 1000,  # 5Kg
+        'large': 2500,  # 12.5Kg
+        'extraLarge': 7500  # 37.5Kg
     }
 
     # Calculate total price
@@ -742,14 +785,14 @@ def create_order():
 
     try:
         if user_role == 'customer':
-            # Fetch customer name from the database
+            # Fetch customer info from the database
             customer = Customer.query.filter_by(customerid=customer_id).first()
             if not customer:
                 return jsonify({'error': 'Customer not found'}), 404
 
-            # Create a new order in the CustomerOrders table
+            # Create a new customer order
             new_order = CustomerOrders(
-                name=customer.name,  # Use the customer's name
+                name=customer.name,
                 twoandhalfkg=order_quantities.get('small', 0),
                 fivekg=order_quantities.get('medium', 0),
                 twelevekg=order_quantities.get('large', 0),
@@ -762,15 +805,20 @@ def create_order():
                 customerid=customer_id
             )
             db.session.add(new_order)
+            db.session.commit()
+
+            # Send email to customer
+            send_email(customer.email, new_order.customerorderid, total)
+
         elif user_role == 'business':
-            # Fetch business name from the database
+            # Fetch business info from the database
             business = Business.query.filter_by(businessid=business_id).first()
             if not business:
                 return jsonify({'error': 'Business not found'}), 404
 
-            # Create a new order in the BusinessOrders table
+            # Create a new business order
             new_order = BusinessOrders(
-                name=business.name,  # Use the business's name
+                name=business.name,
                 twoandhalfkg=order_quantities.get('small', 0),
                 fivekg=order_quantities.get('medium', 0),
                 twelevekg=order_quantities.get('large', 0),
@@ -785,10 +833,14 @@ def create_order():
                 businessid=business_id
             )
             db.session.add(new_order)
+            db.session.commit()
+
+            # Send email to business
+            send_email(business.email, new_order.businessorderid, total)
+
         else:
             return jsonify({'error': 'Invalid user role'}), 400
 
-        db.session.commit()
         return jsonify({'message': 'Order created successfully'}), 201
 
     except SQLAlchemyError as e:
@@ -798,6 +850,42 @@ def create_order():
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         return jsonify({'error': 'An unexpected error occurred'}), 500
+
+
+def send_email(to_email, order_id, total):
+    """
+    Sends an email using the Mailtrap API.
+    """
+    try:
+        url = "https://sandbox.api.mailtrap.io/api/send/3425841"  # Mailtrap API endpoint
+        headers = {
+            "Authorization": "Bearer 28a887c551ad5c522d33bd218443f35f",  # Replace with your Mailtrap API token
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "from": {"email": "test@example.com", "name": "Order System"},
+            "to": [{"email": to_email}],  # Customer or Business email
+            "subject": "Order Confirmation",
+            "text": (
+                f"Thank you for your order!\n\n"
+                f"Order Details:\n"
+                f"- Total: {total}\n"
+                f"- Order ID: {order_id}\n\n"
+                f"We appreciate your business!"
+            ),
+            "category": "Order Notification"
+        }
+
+        response = requests.post(url, headers=headers, data=json.dumps(payload))
+
+        if response.status_code == 200:
+            logger.info("Email sent successfully.")
+        else:
+            logger.error(f"Failed to send email. Status code: {response.status_code}")
+            logger.error(f"Response: {response.text}")
+
+    except Exception as e:
+        logger.error(f"Error sending email: {str(e)}")
 
 
 @app.route('/api/user/profile/<int:user_id>', methods=['PUT'])
@@ -878,24 +966,119 @@ def update_customer_order(order_id):
     data = request.get_json()
     order = CustomerOrders.query.get_or_404(order_id)
 
+    # Update order status
     order.status = data.get('status', order.status)
+
+    # Update completed date if provided
     if data.get('completeddate'):
         order.completeddate = datetime.fromisoformat(data['completeddate'])
 
+    # Check if the status has been updated to "Confirmed"
+    if order.status == 'Confirmed':
+        # Send email notification to the customer
+        customer = Customer.query.filter_by(customerid=order.customerid).first()
+        if customer:
+            send_confirmation_email(customer.email, order.orderid)  # Use 'orderid' instead of 'id'
+
+    # Commit the changes to the database
     db.session.commit()
     return jsonify({'message': 'Order updated successfully'}), 200
+
+
+def send_confirmation_email(to_email, order_id):
+    """
+    Sends a confirmation email to the customer when the order is confirmed.
+    """
+    try:
+        url = "https://sandbox.api.mailtrap.io/api/send/3425841"  # Mailtrap API endpoint
+        headers = {
+            "Authorization": "Bearer 28a887c551ad5c522d33bd218443f35f",  # Replace with your Mailtrap API token
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "from": {"email": "test@example.com", "name": "Order System"},
+            "to": [{"email": to_email}],  # Customer email
+            "subject": "Order Confirmed",
+            "text": (
+                f"Your order has been confirmed by the outlet!\n\n"
+                f"Order ID: {order_id}\n"
+                f"Thank you for choosing our service. We will notify you once your order is ready for delivery or pickup.\n\n"
+                f"Best regards,\nOrder System"
+            ),
+            "category": "Order Confirmation"
+        }
+
+        response = requests.post(url, headers=headers, data=json.dumps(payload))
+
+        if response.status_code == 200:
+            logger.info("Confirmation email sent successfully.")
+        else:
+            logger.error(f"Failed to send confirmation email. Status code: {response.status_code}")
+            logger.error(f"Response: {response.text}")
+
+    except Exception as e:
+        logger.error(f"Error sending confirmation email: {str(e)}")
+
 
 @app.route('/business-orders/<int:business_order_id>', methods=['PUT'])
 def update_business_order(business_order_id):
     data = request.get_json()
     order = BusinessOrders.query.get_or_404(business_order_id)
 
+    # Update order status
     order.status = data.get('status', order.status)
+
+    # Update completed date if provided
     if data.get('completeddate'):
         order.completeddate = datetime.fromisoformat(data['completeddate'])
 
+    # Check if the status has been updated to "Confirmed"
+    if order.status == 'Confirmed':
+        # Fetch business info to send the email
+        business = Business.query.filter_by(businessid=order.businessid).first()
+        if business:
+            send_confirmation_email(business.email, order.businessorderid)  # Use 'businessorderid' instead of 'orderid'
+
+    # Commit the changes to the database
     db.session.commit()
     return jsonify({'message': 'Business order updated successfully'}), 200
+
+
+def send_confirmation_email(to_email, business_order_id):
+    """
+    Sends a confirmation email to the business.
+    """
+    try:
+        url = "https://sandbox.api.mailtrap.io/api/send/3425841"  # Mailtrap API endpoint (change to real one if necessary)
+        headers = {
+            "Authorization": "Bearer 28a887c551ad5c522d33bd218443f35f",  # Replace with your Mailtrap API token
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "from": {"email": "test@example.com", "name": "Order System"},
+            "to": [{"email": to_email}],  # Business email
+            "subject": "Your Business Order has been Confirmed",
+            "text": (
+                f"Dear Business,\n\n"
+                f"Good news! Your order Business Order ID {business_order_id} has been confirmed.\n\n"
+                f"Thank you for your business, and we look forward to serving you further.\n\n"
+                f"Best regards,\n"
+                f"GasByGas"
+            ),
+            "category": "Order Notification"
+        }
+
+        response = requests.post(url, headers=headers, data=json.dumps(payload))
+
+        if response.status_code == 200:
+            logger.info("Confirmation email sent successfully.")
+        else:
+            logger.error(f"Failed to send email. Status code: {response.status_code}")
+            logger.error(f"Response: {response.text}")
+
+    except Exception as e:
+        logger.error(f"Error sending email: {str(e)}")
+
 
 @app.route('/outlet-orders', methods=['POST'])
 def create_outlet_order():
@@ -920,7 +1103,7 @@ def create_outlet_order():
             status=data.get('status', 'Pending'),
             createdon=datetime.utcnow(),
             orderedon=orderedon,  # Use the converted datetime object
-            outid=1  # Replace with the actual outlet ID if available
+
         )
 
         db.session.add(new_order)
@@ -965,6 +1148,76 @@ def get_outlet_orders_admin():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/outlet-orders/<int:id>', methods=['PUT'])
+def update_order_status(id):
+    try:
+        order = OutletOrders.query.get(id)
+        if not order:
+            return jsonify({"message": "Order not found"}), 404
+
+        data = request.get_json()
+        order.status = data.get('status')
+        if data.get('completedon'):
+            order.completedon = data.get('completedon')
+
+        # Send email to outlet if status is "confirmed"
+        if order.status.lower() == 'confirmed':
+            outlet = Outlet.query.get(order.outid)  # Get outlet info using outid
+            if outlet and outlet.email:  # Make sure outlet exists and has an email
+                # Mailtrap API details for sending to outlet
+                url = "https://sandbox.api.mailtrap.io/api/send/3425841"
+                payload = {
+                    "from": {"email": "hello@example.com", "name": "Mailtrap Test"},
+                    "to": [{"email": outlet.email}],  # Outlet's email
+                    "subject": "Order Confirmation",
+                    "text": f"Dear {outlet.name},\n\nYour order with ID {order.orderid} has been confirmed. Thank you for your business!\n\nBest regards,\nYour Company Name",
+                    "category": "Order Confirmation"
+                }
+                headers = {
+                    "Authorization": "Bearer 28a887c551ad5c522d33bd218443f35f",  # Mailtrap API key
+                    "Content-Type": "application/json"
+                }
+
+                # Make the request to the Mailtrap API
+                response = requests.post(url, json=payload, headers=headers)
+
+                if response.status_code != 200:
+                    print(f"Error sending email to outlet: {response.text}")
+                    return jsonify({"message": "Status updated, but failed to send confirmation email to outlet."}), 500
+
+        # Get all customers of the outlet with 'waiting' status orders
+        customers_to_notify = Customer.query.join(CustomerOrders).filter(
+            CustomerOrders.customerid == Customer.customerid,
+            CustomerOrders.status == 'waiting',
+            CustomerOrders.orderid == order.orderid  # Filter based on the current order
+        ).all()
+
+        # Send confirmation email to each customer with 'waiting' order status
+        for customer in customers_to_notify:
+            if customer.email:  # Ensure the customer has an email
+                customer_payload = {
+                    "from": {"email": "hello@example.com", "name": "Mailtrap Test"},
+                    "to": [{"email": customer.email}],  # Customer's email
+                    "subject": "Order Confirmation",
+                    "text": f"Dear {customer.name},\n\nYour order with ID {order.orderid} has been confirmed. Thank you for your business!\n\nBest regards,\nYour Company Name",
+                    "category": "Order Confirmation"
+                }
+
+                # Send email to customer
+                customer_response = requests.post(url, json=customer_payload, headers=headers)
+                if customer_response.status_code != 200:
+                    print(f"Error sending email to customer {customer.name}: {customer_response.text}")
+                    continue  # Continue with the next customer
+
+        # Commit the order status update
+        db.session.commit()
+        return jsonify({"message": "Status updated and emails sent successfully"}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"message": f"Error: {str(e)}"}), 500
+
+
 # Get all outlets
 @app.route('/outlets', methods=['GET'])
 def get_outlets():
@@ -993,11 +1246,13 @@ def get_outlets():
 def create_outlet():
     try:
         data = request.get_json()
+        logging.info(f'Received data: {data}')  # Log the received data
 
         # Validate required fields
         required_fields = ['name', 'email', 'contactNumber', 'address', 'username', 'password']
         for field in required_fields:
             if field not in data:
+                logging.error(f'Missing required field: {field}')  # Log missing fields
                 return jsonify({'error': f'Missing required field: {field}'}), 400
 
         # First create the user
@@ -1005,12 +1260,12 @@ def create_outlet():
         new_user = Users(
             username=data['username'],
             password=hashed_password,
-            email=data['email'],
             role='outlet'
         )
 
         db.session.add(new_user)
         db.session.flush()  # This will assign the userid without committing
+        logging.info(f'Created new user: {new_user.userid}')  # Log the new user ID
 
         # Create new outlet with the user ID
         new_outlet = Outlet(
@@ -1023,6 +1278,7 @@ def create_outlet():
 
         db.session.add(new_outlet)
         db.session.commit()
+        logging.info(f'Created new outlet: {new_outlet.outid}')  # Log the new outlet ID
 
         # Return the created outlet (excluding sensitive information)
         return jsonify({
@@ -1038,6 +1294,7 @@ def create_outlet():
     except IntegrityError as e:
         db.session.rollback()
         error_message = str(e.orig).lower()
+        logging.error(f'IntegrityError: {error_message}')  # Log IntegrityError
         if 'unique constraint' in error_message:
             if 'username' in error_message:
                 return jsonify({'error': 'Username already exists'}), 400
@@ -1047,8 +1304,8 @@ def create_outlet():
 
     except Exception as e:
         db.session.rollback()
+        logging.error(f'Unexpected error: {str(e)}')  # Log unexpected errors
         return jsonify({'error': str(e)}), 500
-
 
 # Update the delete route to handle user deletion as well
 @app.route('/outlets/<int:outlet_id>', methods=['DELETE'])
@@ -1080,7 +1337,7 @@ def delete_outlet(outlet_id):
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
-
+orders = db.relationship('CustomerOrders', backref='customer')
 # Run the Flask app
 if __name__ == '__main__':
     with app.app_context():
