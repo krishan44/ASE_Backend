@@ -1155,6 +1155,7 @@ def update_order_status(id):
         if not order:
             return jsonify({"message": "Order not found"}), 404
 
+        # Get data from the request
         data = request.get_json()
         order.status = data.get('status')
         if data.get('completedon'):
@@ -1163,7 +1164,7 @@ def update_order_status(id):
         # Send email to outlet if status is "confirmed"
         if order.status.lower() == 'confirmed':
             outlet = Outlet.query.get(order.outid)  # Get outlet info using outid
-            if outlet and outlet.email:  # Make sure outlet exists and has an email
+            if outlet and outlet.email:  # Ensure outlet exists and has an email
                 # Mailtrap API details for sending to outlet
                 url = "https://sandbox.api.mailtrap.io/api/send/3425841"
                 payload = {
@@ -1180,9 +1181,8 @@ def update_order_status(id):
 
                 # Make the request to the Mailtrap API
                 response = requests.post(url, json=payload, headers=headers)
-
                 if response.status_code != 200:
-                    print(f"Error sending email to outlet: {response.text}")
+                    logging.error(f"Error sending email to outlet {outlet.name}: {response.text}")
                     return jsonify({"message": "Status updated, but failed to send confirmation email to outlet."}), 500
 
         # Get all customers of the outlet with 'waiting' status orders
@@ -1206,15 +1206,17 @@ def update_order_status(id):
                 # Send email to customer
                 customer_response = requests.post(url, json=customer_payload, headers=headers)
                 if customer_response.status_code != 200:
-                    print(f"Error sending email to customer {customer.name}: {customer_response.text}")
+                    logging.error(f"Error sending email to customer {customer.name}: {customer_response.text}")
                     continue  # Continue with the next customer
 
         # Commit the order status update
         db.session.commit()
+        logging.info(f"Order {order.orderid} status updated and emails sent successfully.")
         return jsonify({"message": "Status updated and emails sent successfully"}), 200
 
     except Exception as e:
         db.session.rollback()
+        logging.error(f"Error updating order status: {str(e)}")
         return jsonify({"message": f"Error: {str(e)}"}), 500
 
 
