@@ -1,9 +1,10 @@
 import requests
 import json
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Blueprint
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from datetime import datetime
+from sqlalchemy import and_
 from sqlalchemy.testing.suite.test_reflection import users
 from werkzeug.security import generate_password_hash, check_password_hash
 import os
@@ -20,7 +21,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 # Enable CORS for all routes
 CORS(app, resources={r"/*": {"origins": "*"}})  # Allow all origins for now
-
+timeline_routes = Blueprint('timeline', __name__)
 # Database configuration
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'postgresql://postgres:1234@localhost:5432/GasByGas')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -1339,7 +1340,79 @@ def delete_outlet(outlet_id):
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
-orders = db.relationship('CustomerOrders', backref='customer')
+        orders = db.relationship('CustomerOrders', backref='customer')
+
+
+@app.route('/timeline/business', methods=['GET'])
+def get_business_timeline():
+    try:
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+
+        if not start_date or not end_date:
+            return jsonify({"error": "Start date and end date are required"}), 400
+
+        # Convert string dates to datetime objects
+        start_datetime = datetime.strptime(start_date, '%Y-%m-%d')
+        end_datetime = datetime.strptime(end_date, '%Y-%m-%d')
+
+        # Query businesses created within the date range
+        businesses = Business.query.filter(
+            and_(
+                Business.createdat >= start_datetime,
+                Business.createdat <= end_datetime
+            )
+        ).all()
+
+        # Format the response to match frontend columns
+        business_data = [{
+            'id': business.businessid,
+            'name': business.name,
+            'branch': business.outlet,
+            'joined': business.createdat.strftime('%Y-%m-%d'),
+            'contactNumber': business.contactnumber
+        } for business in businesses]
+
+        return jsonify(business_data)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/timeline/customer', methods=['GET'])
+def get_customer_timeline():
+    try:
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+
+        if not start_date or not end_date:
+            return jsonify({"error": "Start date and end date are required"}), 400
+
+        # Convert string dates to datetime objects
+        start_datetime = datetime.strptime(start_date, '%Y-%m-%d')
+        end_datetime = datetime.strptime(end_date, '%Y-%m-%d')
+
+        # Query customers created within the date range
+        customers = Customer.query.filter(
+            and_(
+                Customer.createdat >= start_datetime,
+                Customer.createdat <= end_datetime
+            )
+        ).all()
+
+        # Format the response to match frontend columns
+        customer_data = [{
+            'id': customer.customerid,
+            'name': customer.name,
+            'branch': customer.outlet,
+            'joined': customer.createdat.strftime('%Y-%m-%d'),
+            'contactNumber': customer.contactnumber
+        } for customer in customers]
+
+        return jsonify(customer_data)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 # Run the Flask app
 if __name__ == '__main__':
     with app.app_context():
