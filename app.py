@@ -572,7 +572,7 @@ def send_confirmation_email(to_email, order_id):
             "subject": "Your Order has been Confirmed",
             "text": (
                 f"Dear Customer/Business,\n\n"
-                f"Good news! Your order with Order ID {order_id} has been confirmed.\n\n"
+                f"Good news! Your order with Order ID {order_id} has been confirmed \nBring the Payment and Empty Tanks to the Outlet.\n\n"
                 f"Thank you for your business, and we look forward to serving you further.\n\n"
                 f"Best regards,\n"
                 f"Order System"
@@ -1379,40 +1379,88 @@ def get_business_timeline():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route('/timeline/customer', methods=['GET'])
-def get_customer_timeline():
+@app.route('/outlet-orders/<int:id>', methods=['PUT'])
+def update_order_status_All(id):
     try:
-        start_date = request.args.get('start_date')
-        end_date = request.args.get('end_date')
+        order = OutletOrders.query.get(id)
+        if not order:
+            return jsonify({"message": "Order not found"}), 404
 
-        if not start_date or not end_date:
-            return jsonify({"error": "Start date and end date are required"}), 400
+        # Get data from the request
+        data = request.get_json()
+        order.status = data.get('status')
+        if data.get('completedon'):
+            order.completedon = data.get('completedon')
 
-        # Convert string dates to datetime objects
-        start_datetime = datetime.strptime(start_date, '%Y-%m-%d')
-        end_datetime = datetime.strptime(end_date, '%Y-%m-%d')
+        # Commit the order status update first
+        db.session.commit()
 
-        # Query customers created within the date range
-        customers = Customer.query.filter(
-            and_(
-                Customer.createdat >= start_datetime,
-                Customer.createdat <= end_datetime
-            )
-        ).all()
+        # If status is "confirmed", fetch relevant customer and business orders
+        if order.status.lower() == 'confirmed':
+            outlet = Outlet.query.get(order.outid)  # Get outlet info using outid
+            if outlet:
+                # Fetch customers and businesses linked to this outlet
+                customers = Customer.query.filter_by(outlet=outlet.name).all()
+                businesses = Business.query.filter_by(outlet=outlet.name).all()
 
-        # Format the response to match frontend columns
-        customer_data = [{
-            'id': customer.customerid,
-            'name': customer.name,
-            'branch': customer.outlet,
-            'joined': customer.createdat.strftime('%Y-%m-%d'),
-            'contactNumber': customer.contactnumber
-        } for customer in customers]
+                customer_ids = [c.customerid for c in customers]
+                business_ids = [b.businessid for b in businesses]
 
-        return jsonify(customer_data)
+                # Fetch waiting orders for customers and businesses
+                waiting_customer_orders = CustomerOrders.query.filter(
+                    CustomerOrders.customerid.in_(customer_ids),
+                    CustomerOrders.status == 'waiting'
+                ).all()
+
+                waiting_business_orders = BusinessOrders.query.filter(
+                    BusinessOrders.businessid.in_(business_ids),
+                    BusinessOrders.status == 'waiting'
+                ).all()
+
+                # Prepare email sending details
+                url = "https://sandbox.api.mailtrap.io/api/send/3425841"
+                headers = {
+                    "Authorization": "Bearer 28a887c551ad5c522d33bd218443f35f",
+                    "Content-Type": "application/json"
+                }
+
+                # Notify customers
+                for customer in customers:
+                    if customer.email:
+                        payload = {
+                            "from": {"email": "hello@example.com", "name": "Mailtrap Test"},
+                            "to": [{"email": customer.email}],
+                            "subject": "Order Arrival Notice",
+                            "text": f"Dear {customer.name},\n\nYour order will arrive soon. Please bring the payment.\n\nThank you,\n{outlet.name}",
+                            "category": "Order Notification"
+                        }
+                        response = requests.post(url, json=payload, headers=headers)
+                        if response.status_code != 200:
+                            logging.error(f"Error sending email to customer {customer.name}: {response.text}")
+
+                # Notify businesses
+                for business in businesses:
+                    if business.email:
+                        payload = {
+                            "from": {"email": "hello@example.com", "name": "Mailtrap Test"},
+                            "to": [{"email": business.email}],
+                            "subject": "Order Arrival Notice",
+                            "text": f"Dear {business.name},\n\nYour order will arrive soon. Please bring the payment.\n\nThank you,\n{outlet.name}",
+                            "category": "Order Notification"
+                        }
+                        response = requests.post(url, json=payload, headers=headers)
+                        if response.status_code != 200:
+                            logging.error(f"Error sending email to business {business.name}: {response.text}")
+
+        logging.info(f"Order {order.orderid} status updated and notifications sent.")
+        return jsonify({"message": "Status updated and notifications sent successfully"}), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        db.session.rollback()
+        logging.error(f"Error updating order status: {str(e)}")
+        return jsonify({"message": f"Error: {str(e)}"}), 500
+
+
 # Run the Flask app
 if __name__ == '__main__':
     with app.app_context():
