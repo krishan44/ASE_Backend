@@ -102,7 +102,7 @@ class CustomerOrders(db.Model):
     status = db.Column(db.String(50))
     completeddate = db.Column(db.TIMESTAMP)
     total = db.Column(db.Numeric(10, 2), nullable=False)
-    customerid = db.Column(db.Integer, db.ForeignKey('customer.customerid'), nullable=False)
+    customerid = db.Column(db.Integer, db.ForeignKey('customer.customerid'), nullable=True)
 
  # Relationships
     customer_entity = db.relationship('Customer', backref='customer_orders')
@@ -423,7 +423,6 @@ def get_business_orders(branch):
 @app.route('/outlet-orders/<branch>', methods=['GET'])
 def get_outlet_orders(branch):
     try:
-        # Debugging: Print the branch being queried
         logger.info(f"Fetching outlet orders for branch: {branch}")
 
         # Input validation
@@ -431,25 +430,31 @@ def get_outlet_orders(branch):
             logger.error(f"Invalid branch: {branch}")
             return jsonify({'error': 'Invalid branch'}), 400
 
-        # Fetch orders for the specific branch
+        # Step 1: Fetch the Outlet's outid where name matches the branch
+        outlet = Outlet.query.filter_by(name=branch).first()
+        print(outlet)
+
+        if not outlet:
+            logger.info(f"No outlet found with branch name: {branch}")
+            return jsonify({'error': 'Branch not found'}), 404
+
+        # Step 2: Fetch orders using outid
         orders = (
             OutletOrders.query
-            .join(Outlet, OutletOrders.outid == Outlet.outid)
-            .filter(Outlet.name == branch)  # Use branch instead of outname
-            .options(joinedload(OutletOrders.outlet))  # Eager load outlet data
+            .filter(OutletOrders.outid == outlet.outid)  # Use outid directly
+            .options(joinedload(OutletOrders.outlet))    # Eager load outlet data
             .all()
         )
 
-        # Debugging: Print the number of orders fetched
         logger.info(f"Number of outlet orders fetched for branch '{branch}': {len(orders)}")
 
         if not orders:
             logger.info(f"No outlet orders found for branch: {branch}")
             return jsonify([]), 200
 
+        # Prepare the response data
         orders_data = []
         for order in orders:
-            # Debugging: Print the details of each order
             logger.info(f"\n--- Outlet Order Details ---")
             logger.info(f"Order ID: {order.orderid}")
             logger.info(f"Outlet Name: {order.outlet.name}")
@@ -458,13 +463,13 @@ def get_outlet_orders(branch):
             logger.info(f"12.5 Kg: {order.twelevekg}")
             logger.info(f"37 Kg: {order.thirtysevenkg}")
             logger.info(f"Status: {order.status}")
-            logger.info(f"Total: ${order.total}")
+            logger.info(f"Total: Rs.{order.total}")
             logger.info(f"Created Date: {order.createdon}")
-            logger.info("-" * 40)  # Separator for readability
+            logger.info("-" * 40)
 
             orders_data.append({
                 'id': order.orderid,
-                'customer': order.outlet.name,  # Use outlet name as customer
+                'customer': order.outlet.name,
                 'order': [
                     f"2.5 Kg : {order.twoandhalfkg}",
                     f"5 Kg : {order.fivekg}",
@@ -484,6 +489,7 @@ def get_outlet_orders(branch):
     except Exception as e:
         logger.error(f"Error fetching outlet orders for branch {branch}: {str(e)}")
         return jsonify({'error': 'An internal server error occurred'}), 500
+
 
 
 @app.route('/waitlist-orders/<branch>', methods=['GET'])
@@ -1085,37 +1091,57 @@ def send_confirmation_email(to_email, business_order_id):
 def create_outlet_order():
     try:
         data = request.get_json()
+        logger.info(f"Received data for new outlet order: {data}")
 
-        # Validate required fields
-        if not data.get('outname') or not data.get('orderedon'):
-            return jsonify({'error': 'Missing required fields'}), 400
+        # Extract outlet name and orderedon date
+        outname = data.get('outname')
+        orderedon_str = data.get('orderedon')  # Get orderedon from request
 
-        # Convert the orderedon string to a datetime object
-        orderedon = datetime.fromisoformat(data['orderedon'])
+        if not outname:
+            logger.error("Missing 'outname' in request data")
+            return jsonify({'error': 'Missing outlet name'}), 400
 
-        # Create a new OutletOrders record
+        # Parse orderedon date (if provided)
+        orderedon = None
+        if orderedon_str:
+            try:
+                orderedon = datetime.fromisoformat(orderedon_str)  # ISO 8601 format
+            except ValueError:
+                logger.error(f"Invalid date format for orderedon: {orderedon_str}")
+                return jsonify({'error': 'Invalid date format for orderedon (use YYYY-MM-DD)'}), 400
+
+        # Fetch the outlet to get outid
+        outlet = Outlet.query.filter_by(name=outname).first()
+        if not outlet:
+            logger.error(f"No outlet found with name: {outname}")
+            return jsonify({'error': 'Outlet not found'}), 404
+
+        # Create new OutletOrder with orderedon
         new_order = OutletOrders(
-            outname=data['outname'],
+            outname=outname,
             twoandhalfkg=data.get('twoandhalfkg', 0),
             fivekg=data.get('fivekg', 0),
             twelevekg=data.get('twelevekg', 0),
             thirtysevenkg=data.get('thirtysevenkg', 0),
             total=data.get('total', 0),
-            status=data.get('status', 'Pending'),
+            status='Pending',
             createdon=datetime.utcnow(),
-            orderedon=orderedon,  # Use the converted datetime object
-
+            orderedon=orderedon,  # Assign parsed date or None
+            outid=outlet.outid
         )
 
         db.session.add(new_order)
         db.session.commit()
 
-        return jsonify({'message': 'Order created successfully', 'order_id': new_order.orderid}), 201
+        return jsonify({'message': 'Order created successfully', 'orderid': new_order.orderid}), 201
 
-    except Exception as e:
+    except SQLAlchemyError as e:
         db.session.rollback()
-        logger.error(f"Error creating outlet order: {str(e)}")
-        return jsonify({'error': 'An internal server error occurred'}), 500
+        logger.error(f"Database error creating outlet order: {str(e)}")
+        return jsonify({'error': 'Database error'}), 500
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/outlet-orders-admin', methods=['GET'])
 def get_outlet_orders_admin():
