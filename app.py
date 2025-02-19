@@ -815,7 +815,7 @@ def create_order():
             db.session.commit()
 
             # Send email to customer
-            send_email(customer.email, new_order.customerorderid, total)
+            send_email(customer.email, new_order.orderid, total)
 
         elif user_role == 'business':
             # Fetch business info from the database
@@ -1486,6 +1486,40 @@ def update_order_status_All(id):
         logging.error(f"Error updating order status: {str(e)}")
         return jsonify({"message": f"Error: {str(e)}"}), 500
 
+@app.route('/timeline/customer', methods=['GET'])
+def get_customer_timeline():
+    try:
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+
+        if not start_date or not end_date:
+            return jsonify({"error": "Start date and end date are required"}), 400
+
+        # Convert string dates to datetime objects
+        start_datetime = datetime.strptime(start_date, '%Y-%m-%d')
+        end_datetime = datetime.strptime(end_date, '%Y-%m-%d')
+
+        # Query customers created within the date range
+        customers = Customer.query.filter(
+            and_(
+                Customer.createdat >= start_datetime,
+                Customer.createdat <= end_datetime
+            )
+        ).all()
+
+        # Format the response to match frontend columns
+        customer_data = [{
+            'id': customer.customerid,
+            'name': customer.name,
+            'branch': customer.outlet,
+            'joined': customer.createdat.strftime('%Y-%m-%d'),
+            'contactNumber': customer.contactnumber
+        } for customer in customers]
+
+        return jsonify(customer_data)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # Run the Flask app
 if __name__ == '__main__':
